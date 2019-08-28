@@ -1,0 +1,28 @@
+version: 0.1
+
+environment_variables:
+  plaintext:
+    HUGO_VERSION: "0.56.3"
+    HUGO_SHA256: "e77aafdb1b9c7442a5c4dd32c03443d8ac578cc838704b975686ec0d87797907"
+
+phases:
+  install:
+    commands:
+      - env
+      - curl -Ls https://github.com/spf13/hugo/releases/download/v${HUGO_VERSION}/hugo_${HUGO_VERSION}_Linux-64bit.tar.gz -o /tmp/hugo.tar.gz
+      - echo "${HUGO_SHA256}  /tmp/hugo.tar.gz" | sha256sum -c -
+      - tar xf /tmp/hugo.tar.gz -C /tmp
+      - mv /tmp/hugo /usr/bin/hugo
+      - rm -rf /tmp/hugo*
+  build:
+    commands:
+      - git init
+      - rm -rf themes/academic
+      - git submodule add https://github.com/gcushen/hugo-academic.git themes/academic
+      - make site
+
+artifacts:
+  name: site-$(date +%Y-%m-%d)
+  files:
+    - '**/*'
+  base-directory: pkg/site

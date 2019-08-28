@@ -26,9 +26,14 @@ The following command can be used to deploy the template. You must provide an ID
 ```
 aws cloudformation deploy \
     --template-file template.pkg.yaml \
-    --stack-name s3-bucket-site \
+    --stack-name <STACK NAME> \
     --capabilities CAPABILITY_IAM \
     --parameter-overrides \
-        SiteId=<SITE_ID> \
-        DomainName=<DOMAIN NAME>
+        SiteId=<VALUE> \
+        DomainName=<VALUE>
 ```
+
+### Parameters
+
+* **SiteId** - Unique (to your account) ID of the site
+* **DomainName** - The domain name associated with this site

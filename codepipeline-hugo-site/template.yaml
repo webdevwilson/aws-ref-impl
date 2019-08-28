@@ -1,0 +1,192 @@
+Transform: 'AWS::Serverless-2016-10-31'
+AWSTemplateFormatVersion: '2010-09-09'
+Description: |
+  Creates a pipeline in CodePipeline that builds a site with hugo and uploads it to S3. Sample buildspec
+  is included and should be placed in the root of the repository.
+Parameters:
+
+  ArtifactBucketName:
+    Type: String
+
+  CloudFrontDistributionId:
+    Type: String
+
+  GitHubAuthToken:
+    Type: String
+    NoEcho: True
+
+  GitHubOwner:
+    Type: String
+
+  GitHubRepo:
+    Type: String
+
+  SiteId:
+    Type: String
+
+  WebBucketName:
+    Type: String
+
+Resources:
+
+  # Create a role for the pipeline to used
+  Role:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'pipeline-${SiteId}-hugo-blog'
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: 'sts:AssumeRole'
+            Effect: Allow
+            Principal:
+              Service:
+                - 'codebuild.amazonaws.com'
+                - 'codepipeline.amazonaws.com'
+                - 'cloudformation.amazonaws.com'
+      Path: /
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: 'Allow'
+                Action:
+                  - 's3:GetObject'
+                  - 's3:PutObject'
+                Resource:
+                  - !Sub 'arn:aws:s3:::${ArtifactBucketName}/*'
+                  - !Sub 'arn:aws:s3:::${WebBucketName}/*'
+              - Effect: 'Allow'
+                Action:
+                  - 'codebuild:*'
+                Resource:
+                  - !Sub 'arn:aws:codebuild:${AWS::Region}:${AWS::AccountId}:project/${SiteId}-build'
+              - Effect: 'Allow'
+                Action:
+                  - 'logs:*'
+                Resource:
+                  - '*'
+      
+  BuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Artifacts:
+        Type: CODEPIPELINE
+      Name: !Sub '${SiteId}-build'
+      ServiceRole: !GetAtt 'Role.Arn'
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: 'buildspec.yaml'
+      Environment:
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/standard:1.0
+        Type: LINUX_CONTAINER
+
+  Pipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      ArtifactStore:
+        Location: !Ref 'ArtifactBucketName'
+        Type: S3
+      Name: !Sub '${SiteId}-hugo'
+      RoleArn: !GetAtt 'Role.Arn'
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: SourceFetch
+              ActionTypeId:
+                Category: Source
+                Owner: ThirdParty
+                Provider: GitHub
+                Version: 1
+              Configuration:
+                Branch: 'master'
+                PollForSourceChanges: False
+                OAuthToken: !Ref GitHubAuthToken
+                Owner: !Ref GitHubOwner
+                Repo: !Ref GitHubRepo
+              InputArtifacts: []
+              OutputArtifacts:
+                - Name: Source
+              RunOrder: 1
+
+        - Name: Build
+          Actions:
+            - Name: GenerateSite
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: 1
+              Configuration:
+                ProjectName: !Ref 'BuildProject'
+              InputArtifacts:
+                - Name: Source
+              OutputArtifacts:
+                - Name: Bundle
+              RunOrder: 1
+        
+        - Name: Deploy
+          Actions:
+            - Name: PushToS3
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: S3
+                Version: 1
+              Configuration:
+                BucketName: !Ref WebBucketName
+                Extract: True
+              InputArtifacts:
+                - Name: Bundle
+            - Name: FlushCache
+              ActionTypeId:
+                Category: Invoke
+                Owner: AWS
+                Provider: Lambda
+                Version: 1
+              Configuration:
+                FunctionName: !Ref CacheInvalidateFunction
+
+  # Add the Github Webhook
+  PipelineWebhook:
+    Type: AWS::CodePipeline::Webhook
+    Properties: 
+      Authentication: GITHUB_HMAC
+      AuthenticationConfiguration: 
+        SecretToken: !Ref GitHubAuthToken
+      Filters: 
+        - JsonPath: '$.ref'
+          MatchEquals: 'refs/heads/{Branch}'
+      RegisterWithThirdParty: True
+      TargetAction: SourceFetch
+      TargetPipeline: !Ref Pipeline
+      TargetPipelineVersion: !GetAtt Pipeline.Version
+
+  # Create a lambda that will invalidate the cache as a stage in the pipeline
+  CacheInvalidateFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ./lambda
+      Handler: invalidate_cache.handler
+      Runtime: python3.7
+      Policies:
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: 'Allow'
+              Action: 
+                - 'cloudfront:CreateInvalidation'
+                - 'codepipeline:PutJobFailureResult'
+                - 'codepipeline:PutJobSuccessResult'
+              Resource: '*'
+      Environment:
+        Variables:
+          DISTRIBUTION_ID: !Ref CloudFrontDistributionId
+
+  # Allow codepipeline to invoke the function
+  CodePipelineInvokeLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties: 
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref CacheInvalidateFunction
+      Principal: !GetAtt Role.Arn
