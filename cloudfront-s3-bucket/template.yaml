@@ -1,0 +1,176 @@
+Transform: 'AWS::Serverless-2016-10-31'
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Deploys the blog to AWS
+
+Parameters:
+
+  SiteId:
+    Description: ID of the website, must be unique in an account
+    Type: String
+
+  DomainName:
+    Description: The domain name of the site
+    Type: String
+
+Resources:
+
+  # Create a certificate in ACM
+  WebCertificate:
+    Type: AWS::CertificateManager::Certificate
+    Properties:
+      DomainName: !Ref DomainName
+      DomainValidationOptions:
+        - DomainName: !Ref DomainName
+          ValidationDomain: !Ref DomainName
+      ValidationMethod: DNS
+
+  # Serves blog content
+  WebBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    Properties:
+      AccessControl: Private
+      BucketName: !Sub 'web-${SiteId}-${AWS::AccountId}-${AWS::Region}'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: 'True'
+        BlockPublicPolicy: 'True'
+        IgnorePublicAcls: 'True'
+        RestrictPublicBuckets: 'True'
+  
+  # Allow public to read the bucket
+  WebBucketPolicy: 
+    Type: AWS::S3::BucketPolicy
+    Properties: 
+      Bucket: !Ref WebBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action: s3:GetObject
+            Principal:
+              CanonicalUser: !GetAtt CloudFrontOriginAccessIdentity.S3CanonicalUserId
+            Resource: !Sub '${WebBucket.Arn}/*'
+
+  # Logging bucket for CloudFront access logs
+  LoggingBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    Properties:
+      AccessControl: Private
+      BucketName: !Sub 'logging-${SiteId}-${AWS::AccountId}-${AWS::Region}'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: 'True'
+        BlockPublicPolicy: 'True'
+        IgnorePublicAcls: 'True'
+        RestrictPublicBuckets: 'True'
+
+  # Create a role for the lambda to run as
+  IndexPageRewriteFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement: 
+          - Effect: 'Allow'
+            Principal: 
+              Service: 
+                - edgelambda.amazonaws.com
+                - lambda.amazonaws.com
+            Action: 
+              - 'sts:AssumeRole'
+      ManagedPolicyArns: 
+        - arn:aws:iam::aws:policy/AdministratorAccess
+
+  # Create a lambda function to rewrite requests for directories
+  IndexPageRewriteFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Runtime: python3.7
+      Handler: directory_rewrite.handler
+      CodeUri: ./lambda
+      Role: !GetAtt IndexPageRewriteFunctionRole.Arn
+      AutoPublishAlias: latest
+
+  # Create an origin access identity for accessing the web bucket
+  CloudFrontOriginAccessIdentity:
+    Type: AWS::CloudFront::CloudFrontOriginAccessIdentity
+    Properties: 
+      CloudFrontOriginAccessIdentityConfig:
+        Comment: 'Allow CloudFront to access S3 bucket' 
+  
+  # CloudFront distribution serves content from S3 bucket
+  CloudFrontDistribution:
+    Type: AWS::CloudFront::Distribution
+    DependsOn: 
+      - WebBucketPolicy
+      - LoggingBucket
+    Properties:
+      DistributionConfig:
+        Origins:
+          - DomainName: !Sub '${WebBucket}.s3.amazonaws.com'
+            Id: S3Origin
+            S3OriginConfig:
+              OriginAccessIdentity: !Sub 'origin-access-identity/cloudfront/${CloudFrontOriginAccessIdentity}'
+        Enabled: 'true'
+        DefaultRootObject: index.html
+        HttpVersion: http2
+        Logging:
+          IncludeCookies: 'false'
+          Bucket: !Sub '${LoggingBucket}.s3.amazonaws.com'
+          Prefix: cloudfront
+        Aliases:
+          - !Ref DomainName
+        DefaultCacheBehavior:
+          AllowedMethods:
+            - GET
+            - HEAD
+            - OPTIONS
+          Compress: 'True'
+          DefaultTTL: 31536000
+          LambdaFunctionAssociations:
+            - EventType: origin-request
+              LambdaFunctionARN: !Ref IndexPageRewriteFunction.Version
+          TargetOriginId: S3Origin
+          ForwardedValues:
+            QueryString: 'false'
+            Cookies:
+              Forward: none
+          ViewerProtocolPolicy: redirect-to-https
+        PriceClass: PriceClass_All
+        ViewerCertificate:
+          AcmCertificateArn: !Ref WebCertificate
+          SslSupportMethod: sni-only
+
+  # Create a Public Route53 Hosted Zone
+  DnsHostedZone:
+    Type: AWS::Route53::HostedZone
+    Properties:
+      Name: !Ref DomainName
+    
+  # Root A Record points to CloudFront distribution
+  DnsRootARecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref DnsHostedZone
+      Name: !Ref DomainName
+      Type: A
+      Failover: SECONDARY
+      SetIdentifier: CLOUDFRONT
+      AliasTarget:
+        DNSName: !GetAtt CloudFrontDistribution.DomainName
+        HostedZoneId: Z2FDTNDATAQYW2
+        EvaluateTargetHealth: 'True'
+
+Outputs:
+
+  DistributionId:
+    Description: 'The ID of the CloudFront distribution'
+    Value: !Ref CloudFrontDistribution
+
+  WebsiteBucketName:
+    Description: 'The name of the bucket for publishing the website'
+    Value: !Ref WebBucket
+
+  WebsiteLink:
+    Description: 'Link to the Cloudfront Distribution'
+    Value: !Sub 'https://${CloudFrontDistribution.DomainName}'
