@@ -13,6 +13,7 @@ Resources:
         Type: AWS::EC2::VPC
         Properties:
           CidrBlock: !Ref VpcCidr
+          EnableDnsSupport: "true"
 
     Subnet1:
         Type: AWS::EC2::Subnet
@@ -28,7 +29,7 @@ Resources:
         Type: AWS::EC2::Subnet
         Properties:
             AvailabilityZone: !Sub "${AWS::Region}b"
-            CidrBlock: !Select [ 0, !Cidr [ !GetAtt Vpc.CidrBlock, 2, 8 ]]
+            CidrBlock: !Select [ 1, !Cidr [ !GetAtt Vpc.CidrBlock, 2, 8 ]]
             VpcId: !Ref Vpc
             Tags:
               - Key: Name
