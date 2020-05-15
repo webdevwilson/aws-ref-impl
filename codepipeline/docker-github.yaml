@@ -1,0 +1,206 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: |
+  Creates a pipeline in CodePipeline that builds a docker image from a GitHub and pushes it to ECR
+Parameters:
+
+  ArtifactBucketName:
+    Type: String
+
+# 0b55b9c0a161fb0972bf73d5f66658b7df234dec
+  GitHubAuthToken:
+    Type: String
+    NoEcho: True
+
+  GitHubOwner:
+    Type: String
+
+  GitHubRepo:
+    Type: String
+
+  ImageName:
+    Type: String
+
+  LogRetentionInDays:
+    Type: String
+    Default: 30
+
+Resources:
+
+  # Create an ECR repository
+  EcrRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Ref ImageName
+
+  # Create a role for codebuild to use
+  BuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'codebuild-docker-${ImageName}'
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: 'sts:AssumeRole'
+            Effect: Allow
+            Principal:
+              Service:
+                - 'codebuild.amazonaws.com'
+      Path: /
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: 'Allow'
+                Action:
+                  - 'ecr:BatchCheckLayerAvailability'
+                  - 'ecr:GetDownloadUrlForLayer'
+                  - 'ecr:GetRepositoryPolicy'
+                  - 'ecr:DescribeRepositories'
+                  - 'ecr:ListImages'
+                  - 'ecr:DescribeImages'
+                  - 'ecr:BatchGetImage'
+                Resource: !Sub 'arn:aws:ecr:${AWS::Region}:${AWS::AccountId}:repository/${EcrRepository}'
+              - Effect: 'Allow'
+                Action:
+#                  - 's3:GetBucketLocation'
+#                  - 's3:GetObject'
+#                  - 's3:GetObjectVersion'
+#                  - 's3:PutObject'
+                  - 's3:*'
+                Resource:
+                  - !Sub 'arn:aws:s3:::${ArtifactBucketName}'
+                  - !Sub 'arn:aws:s3:::${ArtifactBucketName}/*'
+                  - 'arn:aws:s3:::codepipeline-us-east-1-283465669963'
+                  - 'arn:aws:s3:::codepipeline-us-east-1-283465669963/*'
+              - Effect: Allow
+                Action:
+                  - 'kms:Decrypt'
+                  - 'ecr:GetAuthorizationToken'
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                Resource: '*'
+
+  # Create the build project
+  BuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Artifacts:
+        Type: CODEPIPELINE
+      Name: !Sub 'docker-${ImageName}'
+      Environment:
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/standard:1.0
+        Type: LINUX_CONTAINER
+        PrivilegedMode: True
+        EnvironmentVariables:
+          - Name: REPOSITORY_URI
+            Value: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${EcrRepository}'
+      SecondarySources:
+        - Type: S3
+          Location: codepipeline-us-east-1-283465669963/buildspecs/
+          SourceIdentifier: s3
+          BuildSpec: 'docker-ecr-buildspec.yaml'
+      ServiceRole: !GetAtt 'BuildRole.Arn'
+      Source:
+        Type: CODEPIPELINE
+
+  # Configure log retention for the build logs
+  CodeBuildLogs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/codebuild/${BuildProject}'
+      RetentionInDays: !Ref LogRetentionInDays
+
+  # Create a role for the pipeline to assume
+  PipelineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'codepipeline-docker-${ImageName}'
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: 'sts:AssumeRole'
+            Effect: Allow
+            Principal:
+              Service:
+                - 'codepipeline.amazonaws.com'
+      Path: /
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: 'Allow'
+                Action:
+                  - 'codebuild:BatchGetBuilds'
+                  - 'codebuild:StartBuild'
+                Resource:
+                  - !GetAtt 'BuildProject.Arn'
+              - Effect: 'Allow'
+                Action:
+                  - 's3:GetObject'
+                  - 's3:GetObjectVersion'
+                  - 's3:PutObject'
+                Resource:
+                  - !Sub 'arn:aws:s3:::${ArtifactBucketName}'
+                  - !Sub 'arn:aws:s3:::${ArtifactBucketName}/*'
+
+  Pipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      ArtifactStore:
+        Location: !Ref 'ArtifactBucketName'
+        Type: S3
+      Name: !Sub 'docker-${ImageName}'
+      RoleArn: !GetAtt 'PipelineRole.Arn'
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: SourceFetch
+              ActionTypeId:
+                Category: Source
+                Owner: ThirdParty
+                Provider: GitHub
+                Version: 1
+              Configuration:
+                Branch: 'master'
+                PollForSourceChanges: False
+                OAuthToken: !Ref GitHubAuthToken
+                Owner: !Ref GitHubOwner
+                Repo: !Ref GitHubRepo
+              InputArtifacts: []
+              OutputArtifacts:
+                - Name: Source
+              RunOrder: 1
+
+        - Name: Build
+          Actions:
+            - Name: DockerBuildPush
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: 1
+              Configuration:
+                ProjectName: !Ref 'BuildProject'
+              InputArtifacts:
+                - Name: Source
+              OutputArtifacts:
+                - Name: Bundle
+              RunOrder: 1
+
+#
+#  # Add the Github Webhook
+#  PipelineWebhook:
+#    Type: AWS::CodePipeline::Webhook
+#    Properties:
+#      Authentication: GITHUB_HMAC
+#      AuthenticationConfiguration:
+#        SecretToken: !Ref GitHubAuthToken
+#      Filters:
+#        - JsonPath: '$.ref'
+#          MatchEquals: 'refs/heads/{Branch}'
+#      RegisterWithThirdParty: True
+#      TargetAction: SourceFetch
+#      TargetPipeline: !Ref Pipeline
+#      TargetPipelineVersion: !GetAtt Pipeline.Version

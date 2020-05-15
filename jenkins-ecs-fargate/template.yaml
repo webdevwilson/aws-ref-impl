@@ -1,0 +1,278 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Jenkins Master ECS Fargate
+
+Parameters:
+
+  ClusterNameParameter:
+    Type: String
+    Description: |
+      The name of the Jenkins ECS cluster
+    Default: 'jenkins'
+
+  JenkinsMasterTaskNameParameter:
+    Type: String
+    Description: |
+      The name of the ECS task associated with the Jenkins master task
+    Default: 'jenkins-master'
+
+  JenkinsMasterFargateSizeParameter:
+    Type: String
+    Description: |
+      The vCPU (1024 is full CPU) and Memory (in MB) size for Fargate to allocate for Jenkins Master (vCPU,Memory)
+    Default: 512,1024
+    AllowedValues:
+      - 256,512
+      - 256,2048
+      - 512,1024
+      - 512,2048
+
+  JenkinsMasterImageParameter:
+    Type: String
+    Description: |
+      The image to use as Jenkins master
+    Default: 'jenkins/jenkins:lts-alpine'
+
+  JenkinsMasterPortParameter:
+    Type: String
+    Description: |
+      The port that Jenkins exposes
+    Default: '8080'
+
+  JenkinsSubnetIdsParameter:
+    Description: |
+      ID's of the subnets to use when launching Jenkins Master and Slaves
+    Type: List<AWS::EC2::Subnet::Id>
+
+  LoadBalancerSubnetIdsParameter:
+    Description: |
+      ID's of the subnets in which to place the load balancer fronting Jenkins master
+    Type: List<AWS::EC2::Subnet::Id>
+
+  LogRetentionInDaysParameter:
+    Description: |
+      How long to retain any logs associated with Jenkins
+    Type: String
+    Default: '30'
+
+  PublicIpEnabledParameter:
+    Type: String
+    Description: |
+      Enable when Jenkins master is running in a public subnet (not behind a NAT gateway)
+    Default: 'DISABLED'
+    AllowedValues:
+      - ENABLED
+      - DISABLED
+
+  VpcIdParameter:
+    Description: |
+      ID of the VPC which this will be placed. Subnets must be in this VPC.
+    Type: AWS::EC2::VPC::Id
+
+Resources:
+
+  # Create an ECS Cluster for Jenkins to use
+  EcsCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: Jenkins
+
+  # Create the log group to manage expiration
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/ecs/${JenkinsMasterTaskNameParameter}'
+      RetentionInDays: !Ref 'LogRetentionInDaysParameter'
+
+  # The role which the Jenkins master will run as
+  TaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: 'sts:AssumeRole'
+            Effect: 'Allow'
+            Principal:
+              Service:
+                - 'ecs-tasks.amazonaws.com'
+      Path: /
+      Policies:
+        - PolicyName: !Sub '${JenkinsMasterTaskNameParameter}-ecs-task'
+          PolicyDocument:
+            Statement:
+              - Effect: 'Allow'
+                Action:
+                  - 'ecs:RegisterTaskDefinition'
+                  - 'ecs:DeregisterTaskDefinition'
+                  - 'ecs:ListClusters'
+                  - 'ecs:DescribeContainerInstances'
+                  - 'ecs:ListTaskDefinitions'
+                  - 'ecs:DescribeTaskDefinition'
+                Resource: '*'
+              - Effect: 'Allow'
+                Action:
+                  - 'ecs:StopTask'
+                  - 'ecs:ListContainerInstances'
+                Resource: !Sub 'arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:cluster/${ClusterNameParameter}'
+              - Effect: 'Allow'
+                Action:
+                  - 'ecs:RunTask'
+                Resource: !Sub 'arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:task-definition/jenkins-agent:*'
+              - Effect: 'Allow'
+                Action:
+                  - 'ecs:StopTask'
+                  - 'ecs:DescribeTasks'
+                Resource: !Sub 'arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:task/*'
+              - Effect: 'Allow'
+                Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                Resource: '*'
+      RoleName: !Sub '${JenkinsMasterTaskNameParameter}-ecs-task'
+
+  # Create a shared network drive
+  EfsFileSystem:
+    Type: AWS::EFS::FileSystem
+    Properties:
+      FileSystemTags:
+        - Key: Name
+          Value: jenkins-store
+      LifecyclePolicies:
+        - TransitionToIA: AFTER_60_DAYS
+
+  # Create a security group for the EFS service
+  EfsSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: 'jenkins-store-efs'
+      GroupDescription: Allows traffic on port 80
+      SecurityGroupIngress:
+        - IpProtocol: 'tcp'
+          FromPort: 2049
+          ToPort: 2049
+          SourceSecurityGroupId: !Ref 'EcsServiceSecurityGroup'
+      VpcId: !Ref 'VpcIdParameter'
+
+  # Create a mount point for EFS
+  EfsMount:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref EfsFileSystem
+      SecurityGroups:
+        - !Ref EfsSecurityGroup
+      SubnetId: !Select [0, !Ref 'JenkinsSubnetIdsParameter']
+
+  # Defines the containers that should run for Jenkins master
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Cpu: !Select [0, !Split [',', !Ref 'JenkinsMasterFargateSizeParameter']]
+      ExecutionRoleArn: !GetAtt 'TaskRole.Arn'
+      Family: !Ref 'JenkinsMasterTaskNameParameter'
+      Memory: !Select [1, !Split [',', !Ref 'JenkinsMasterFargateSizeParameter']]
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      ContainerDefinitions:
+        - Name: !Ref 'JenkinsMasterTaskNameParameter'
+          Image: !Ref 'JenkinsMasterImageParameter'
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref 'LogGroup'
+              awslogs-region: !Ref 'AWS::Region'
+              awslogs-stream-prefix: 'ecs'
+          PortMappings:
+            - ContainerPort: !Ref 'JenkinsMasterPortParameter'
+          Essential: true
+#      Volumes:
+#        - Name: docker-socket
+#            - /var/run/docker.sock:/var/run/docker.sock
+#        - Name: jenkins-shared-workspace
+#          DockerVolumeConfiguration:
+#            Scope: shared
+#            Autoprovision: true
+#            Driver: local
+#            DriverOpts:
+#              type: nfs
+#              device: !Sub '${EfsFileSystem}.efs.${AWS::Region}.amazonaws.com:/var/jenkins_home'
+#              o: !Sub 'addr=${EfsFileSystem}.efs.${AWS::Region}.amazonaws.com,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2,noresvport'
+
+  LoadBalancerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: 'jenkins-master-lb'
+      GroupDescription: Allows traffic on port 80
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+      VpcId: !Ref 'VpcIdParameter'
+
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub '${JenkinsMasterTaskNameParameter}-lb'
+      SecurityGroups:
+        - !Ref 'LoadBalancerSecurityGroup'
+      Subnets: !Ref 'LoadBalancerSubnetIdsParameter'
+
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Ref 'JenkinsMasterTaskNameParameter'
+      HealthCheckPath: /login
+      Port: 80
+      Protocol: HTTP
+      TargetType: ip
+      VpcId: !Ref 'VpcIdParameter'
+
+  LoadBalancerListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - TargetGroupArn: !Ref 'TargetGroup'
+          Type: forward
+      LoadBalancerArn: !Ref 'LoadBalancer'
+      Port: 80
+      Protocol: HTTP
+
+  EcsServiceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: 'jenkins-master-ecs-service'
+      GroupDescription: Allows traffic on port 80
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: !Ref 'JenkinsMasterPortParameter'
+          ToPort: !Ref 'JenkinsMasterPortParameter'
+          SourceSecurityGroupId: !Ref 'LoadBalancerSecurityGroup'
+      VpcId: !Ref 'VpcIdParameter'
+
+  # Create the ECS service which keeps the TaskDefinition running
+  EcsService:
+    Type: AWS::ECS::Service
+    DependsOn:
+      - LoadBalancerListener
+    Properties:
+      ServiceName: !Ref 'JenkinsMasterTaskNameParameter'
+      TaskDefinition: !Ref 'TaskDefinition'
+      DesiredCount: 1
+      Cluster: !Ref 'EcsCluster'
+      LaunchType: FARGATE
+      LoadBalancers:
+        - TargetGroupArn: !Ref 'TargetGroup'
+          ContainerPort: !Ref 'JenkinsMasterPortParameter'
+          ContainerName: !Ref 'JenkinsMasterTaskNameParameter'
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: !Ref 'PublicIpEnabledParameter'
+          SecurityGroups:
+            - !Ref 'EcsServiceSecurityGroup'
+          Subnets: !Ref 'JenkinsSubnetIdsParameter'
+
+Outputs:
+  JenkinsMasterUrl:
+    Description: The HTTP endpoint to access Jenkins
+    Value: !Sub [ 'http://${DNSName}', { DNSName: !GetAtt [ LoadBalancer, 'DNSName' ] } ]

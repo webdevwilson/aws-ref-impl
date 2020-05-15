@@ -1,0 +1,97 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Create a EKS Cluster
+
+Parameters:
+
+    KubeAdminCidr:
+        Type: String
+        Default: 127.0.0.1/32
+
+    KubernetesVersion:
+        Type: String
+        Default: 1.14
+
+    VpcId:
+        Type: AWS::EC2::VPC::Id
+
+    EksClusterSubnets:
+        Type: List<AWS::EC2::Subnet::Id>
+
+    ManagedNodeGroupSubnets:
+        Type: List<AWS::EC2::Subnet::Id>
+
+Resources:
+
+    EksRole:
+        Type: AWS::IAM::Role
+        Properties:
+            RoleName: eks-cluster
+            Description: Role for EKS Cluster
+            AssumeRolePolicyDocument:
+                Version: 2012-10-17
+                Statement:
+                  - Effect: Allow
+                    Principal:
+                        Service: [eks.amazonaws.com]
+                    Action: ['sts:AssumeRole']
+            ManagedPolicyArns:
+              - arn:aws:iam::aws:policy/AmazonEKSClusterPolicy
+              - arn:aws:iam::aws:policy/AmazonEKSServicePolicy
+    
+    EksSecurityGroup:
+        Type: AWS::EC2::SecurityGroup
+        Properties:
+            GroupDescription: Allow http to client host
+            VpcId: !Ref VpcId
+            SecurityGroupIngress:
+              - IpProtocol: -1
+                CidrIp: !Ref KubeAdminCidr
+
+    EksSecurityGroupSelfIngress:
+        Type: AWS::EC2::SecurityGroupIngress
+        Properties:
+           GroupId: !GetAtt EksSecurityGroup.GroupId
+           IpProtocol: -1
+           SourceSecurityGroupId: !GetAtt EksSecurityGroup.GroupId
+
+    EksCluster:
+        Type: 'AWS::EKS::Cluster'
+        Properties:
+            Name: ref-impl
+            Version: !Ref KubernetesVersion
+            RoleArn: !GetAtt EksRole.Arn
+            ResourcesVpcConfig:
+                SecurityGroupIds:
+                  - !Ref EksSecurityGroup
+                SubnetIds: !Ref EksClusterSubnets
+
+    EksNodeRole:
+        Type: 'AWS::IAM::Role'
+        Properties:
+            RoleName: eks-ref-impl-node
+            Description: 'Role for EKS Cluster Nodes'
+            AssumeRolePolicyDocument:
+                Version: '2012-10-17'
+                Statement:
+                  - Effect: Allow
+                    Principal:
+                        Service: [ec2.amazonaws.com]
+                    Action: ['sts:AssumeRole']
+            ManagedPolicyArns:
+                - arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy
+                - arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy
+                - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
+
+    EKSNodegroup:
+        Type: AWS::EKS::Nodegroup
+        DependsOn: EksCluster
+        Properties:
+            ClusterName: !Ref EksCluster
+            NodeRole: !GetAtt EksNodeRole.Arn
+            ScalingConfig:
+                MinSize: 1
+                DesiredSize: 1
+                MaxSize: 3
+            Labels:
+                Key1: default
+            Subnets: !Ref ManagedNodeGroupSubnets
