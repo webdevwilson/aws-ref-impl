@@ -1,0 +1,130 @@
+Transform: 'AWS::Serverless-2016-10-31'
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Jenkins Master ECS Fargate
+Parameters:
+
+  # Global configuration
+  UsernameRegex:
+    Description: The regex the email must match to be configured and notified.
+    Type: String
+    Default: '^[^@]+@[^@]+\.[^@]+$'
+
+  FromEmailAddress:
+    Description: The email address notifications come from.
+    Type: String
+
+  # New user notification settings
+  NewUserEmailSubject:
+    Description: The subject of the email
+    Type: String
+    Default: 'AWS Account has been created for {email}'
+
+  NewUserEmailBody:
+    Description: The text of the email
+    Type: String
+    Default: |
+      Login: {login_link}
+      Username: {email}
+      Password: {password}
+
+  # Password reset notification settings
+  PasswordResetEmailSubject:
+    Description: The subject of the email
+    Type: String
+    Default: 'Password Reset for {email}'
+
+  PasswordResetEmailBody:
+    Description: The text of the email
+    Type: String
+    Default: |
+      Your password has been reset.
+
+      Login: {login_link}
+      Username: {email}
+      Password: {password}
+
+Resources:
+
+  NewUserNotificationFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: 'iam-user-notification'
+      Description: 'Creates logins for any user that is not currently setup to login'
+      CodeUri: ./lambda
+      Handler: new_user_notification.handler
+      Runtime: python3.8
+      MemorySize: 512
+      Timeout: 100
+      Environment:
+        Variables:
+          FROM_ADDRESS: !Ref FromEmailAddress
+          USERNAME_REGEX: !Ref UsernameRegex
+          EMAIL_SUBJECT: !Ref NewUserEmailSubject
+          EMAIL_BODY: !Ref NewUserEmailBody
+      Events:
+        UserCreated:
+          Type: EventBridgeRule
+          Properties:
+            Pattern:
+              detail-type: ['AWS API Call via CloudTrail']
+              detail:
+                eventSource: ['iam.amazonaws.com']
+                eventName: ['CreateUser']
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - 'iam:CreateLoginProfile'
+                - 'iam:GetAccountPasswordPolicy'
+                - 'ses:SendEmail'
+              Resource: '*'
+
+  PasswordResetFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: 'iam-user-password-reset'
+      Description: 'Resets passwords for IAM users'
+      CodeUri: ./lambda
+      Handler: password_reset.handler
+      Runtime: python3.8
+      MemorySize: 512
+      Timeout: 100
+      Environment:
+        Variables:
+          FROM_ADDRESS: !Ref FromEmailAddress
+          USERNAME_REGEX: !Ref UsernameRegex
+          EMAIL_SUBJECT: !Ref PasswordResetEmailSubject
+          EMAIL_BODY: !Ref PasswordResetEmailBody
+      Events: {}
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - 'iam:GetAccountPasswordPolicy'
+                - 'iam:UpdateLoginProfile'
+                - 'ses:SendEmail'
+              Resource: '*'
+
+  SesLambdaInvokePermissions:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt 'PasswordResetFunction.Arn'
+      Action: lambda:InvokeFunction
+      Principal: ses.amazonaws.com
+      SourceAccount: !Ref 'AWS::AccountId'
+
+  ReceiptRuleSet:
+    Type: AWS::SES::ReceiptRuleSet
+    Properties:
+      RuleSetName: iam-notifications
+
+  ReceiptRule:
+    Type: AWS::SES::ReceiptRule
+    DependsOn: ['SesLambdaInvokePermissions']
+    Properties:
+      RuleSetName: !Ref ReceiptRuleSet
+      Rule:
+        Enabled: True
+        Actions:
+          - LambdaAction:
+              FunctionArn: !GetAtt 'PasswordResetFunction.Arn'
