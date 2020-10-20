@@ -1,6 +1,6 @@
 Transform: 'AWS::Serverless-2016-10-31'
 AWSTemplateFormatVersion: '2010-09-09'
-Description: Jenkins Master ECS Fargate
+Description: IAM User Self Service
 Parameters:
 
   # Global configuration
