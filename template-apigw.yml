@@ -1,0 +1,134 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Manages snowflake proxy
+Parameters:
+
+  AcmCertificateArnParameter:
+    Type: String
+
+  ApiGatewayVpcEndpointIdParameter:
+    Type: String
+
+  HostedZoneIdParameter:
+    Type: AWS::Route53::HostedZone::Id
+
+  DomainNameParameter:
+    Type: String
+
+  ProxyNameParameter:
+    Type: String
+
+  ProxyDescriptionParameter:
+    Type: String
+
+  ProxyUrlParameter:
+    Type: String
+
+Resources:
+
+  RestApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Ref ProxyNameParameter
+      Description: !Ref ProxyDescriptionParameter
+      EndpointConfiguration: {Types: [REGIONAL]}
+#      Policy:
+#        Statement: # Only allow invocation of the vpc endpoint over vpce
+#          - Action: ['execute-api:Invoke']
+#            Condition: {StringNotEquals: {aws:SourceVpce: [!Ref 'ApiGatewayVpcEndpointIdParameter']}}
+#            Effect: Deny
+#            Principal: '*'
+#            Resource: ['execute-api:*']
+#          - Action: ['execute-api:Invoke']
+#            Effect: Allow
+#            Principal: '*'
+#            Resource: ['execute-api:*/*/*/*']
+#        Version: '2012-10-17'
+
+  RootMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: NONE
+      HttpMethod: ANY
+      RestApiId: !Ref 'RestApi'
+      ResourceId: !GetAtt 'RestApi.RootResourceId'
+      Integration:
+        Type: HTTP_PROXY
+        IntegrationHttpMethod: ANY
+        PassthroughBehavior: WHEN_NO_MATCH
+        Uri: !Ref ProxyUrlParameter
+        IntegrationResponses:
+          - StatusCode: 200
+
+  ProxyResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref 'RestApi'
+      ParentId: !GetAtt 'RestApi.RootResourceId'
+      PathPart: '{proxy+}'
+
+  ProxyMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      HttpMethod: ANY
+      RestApiId: !Ref 'RestApi'
+      ResourceId: !Ref ProxyResource
+      AuthorizationType: 'NONE'
+      RequestParameters:
+        method.request.path.proxy: true
+      Integration:
+        Type: HTTP_PROXY
+        IntegrationHttpMethod: ANY
+        PassthroughBehavior: WHEN_NO_MATCH
+        CacheKeyParameters:
+          - 'method.request.path.proxy'
+        RequestParameters:
+          integration.request.path.proxy: 'method.request.path.proxy'
+        Uri: !Sub '${ProxyUrlParameter}/{proxy}'
+
+  Deployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn: [RootMethod, ProxyMethod]
+    Properties:
+      RestApiId: !Ref RestApi
+
+  Stage:
+    Type: AWS::ApiGateway::Stage
+    Properties:
+      RestApiId: !Ref RestApi
+      StageName: proxy
+      DeploymentId: !Ref Deployment
+
+  # Create the API Gateway Domain Name
+#  DomainName:
+#    Type: AWS::ApiGateway::DomainName
+#    Properties:
+#      DomainName: !Ref 'DomainNameParameter'
+#      EndpointConfiguration:
+#        Types: [ REGIONAL ]
+#      RegionalCertificateArn: !Ref 'AcmCertificateArnParameter'
+
+  # Map the domain name to the api gateway stage
+#  BasePathMapping:
+#    Type: AWS::ApiGateway::BasePathMapping
+#    Properties:
+#      DomainName: !Ref 'DomainName'
+#      RestApiId: !Ref 'RestApi'
+#      Stage: !Ref 'Stage'
+
+#  DnsRecord:
+#    Type: AWS::Route53::RecordSet
+#    Properties:
+#      HostedZoneId: !Ref HostedZoneIdParameter
+#      Name: !Ref DomainNameParameter
+#      Type: CNAME
+#      AliasTarget:
+#        DNSName: !GetAtt DomainName.RegionalDomainName
+#        HostedZoneId: !GetAtt DomainName.RegionalHostedZoneId
+#        EvaluateTargetHealth: False
+#      TTL: 300
+#      ResourceRecords: [!Sub '${ApiGatewayVpcEndpointIdParameter}-${RestApi}.execute-api.${AWS::Region}.vpce.amazonaws.com']
+
+Outputs:
+
+  ApiUrl:
+    Value: !Sub '${ApiGatewayVpcEndpointIdParameter}-${RestApi}.execute-api.${AWS::Region}.vpce.amazonaws.com/${Stage}'

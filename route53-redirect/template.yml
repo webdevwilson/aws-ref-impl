@@ -1,0 +1,29 @@
+Transform: 'AWS::Serverless-2016-10-31'
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Uses S3 Bucket to do simple Route53 redirect of a domain
+
+Parameters:
+
+  DomainName:
+    Description: Domain name to redirect, must be valid in the hosted zone
+    Type: String
+
+  HostedZoneId:
+    Description: The ID of the Route53 Hosted Zone
+    Type: AWS::Route53::HostedZone::Id
+
+  TargetUrl:
+    Description: The URL to redirect to
+    Type: String
+
+Resources:
+
+  RedirectBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'Redirect-${DomainName}-${HostedZoneId}-${AWS::AccountId}'
+      AccessControl: PublicRead
+      WebsiteConfiguration:
+        RedirectAllRequestsTo:
+          Protocol: !Select [0, !Split ['://', !Ref DomainName ]]
+          HostName: !Select [1, !Split ['://', !Ref DomainName ]]

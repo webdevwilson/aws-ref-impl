@@ -1,0 +1,3 @@
+[submodule "config-permissive-roles/iam-reference"]
+	path = config-permissive-roles/iam-reference
+	url = https://github.com/widdix/complete-aws-iam-reference

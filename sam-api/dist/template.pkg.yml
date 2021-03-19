@@ -1,0 +1,30 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Resources:
+  Api:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: live
+      EndpointConfiguration:
+        Type: REGIONAL
+  Function:
+    Type: AWS::Serverless::Function
+    Properties:
+      Runtime: python3.7
+      CodeUri: s3://cf-templates-vd8fjmc0op15-us-east-1/bf49aeff47c189d69c8e44ca3c0abbe2
+      Handler: lambda_fn.handler
+      Events:
+        RootHandler:
+          Type: Api
+          Properties:
+            RestApiId:
+              Ref: Api
+            Path: /
+            Method: ANY
+        ProxyHandler:
+          Type: Api
+          Properties:
+            RestApiId:
+              Ref: Api
+            Path: /{proxy+}
+            Method: ANY

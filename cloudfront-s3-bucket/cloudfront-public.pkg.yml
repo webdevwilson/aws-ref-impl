@@ -1,0 +1,64 @@
+Transform: AWS::Serverless-2016-10-31
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Creates a static website in AWS, served with Cloudfront
+Parameters:
+  AcmCertificateArnParameter:
+    Description: The ARN of the certificate to use, must be valid for the domain name
+    Type: String
+  DomainNameParameter:
+    Description: Domain name the site will be available under
+    Type: String
+  HostedZoneIdParameter:
+    Description: The ID of the hosted zone
+    Type: AWS::Route53::HostedZone::Id
+Resources:
+  WebBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    Properties:
+      AccessControl: Private
+      BucketName:
+        Fn::Sub: ${DomainNameParameter}-web-${AWS::AccountId}-${AWS::Region}
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: 'True'
+        BlockPublicPolicy: 'True'
+        IgnorePublicAcls: 'True'
+        RestrictPublicBuckets: 'True'
+  WebBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket:
+        Ref: WebBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Action: s3:GetObject
+          Principal:
+            CanonicalUser:
+              Fn::GetAtt:
+              - CloudFrontOriginAccessIdentity
+              - S3CanonicalUserId
+          Resource:
+            Fn::Sub: ${WebBucket.Arn}/*
+  LoggingBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    Properties:
+      AccessControl: Private
+      BucketName:
+        Fn::Sub: ${DomainNameParameter}-access-logs-${AWS::AccountId}-${AWS::Region}
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: 'True'
+        BlockPublicPolicy: 'True'
+        IgnorePublicAcls: 'True'
+        RestrictPublicBuckets: 'True'
+Outputs:
+  WebsiteBucketName:
+    Description: The name of the bucket for publishing the website
+    Value:
+      Ref: WebBucket
+  WebsiteLink:
+    Description: Link to the Cloudfront Distribution
+    Value:
+      Fn::Sub: https://${CloudFrontDistribution.DomainName}

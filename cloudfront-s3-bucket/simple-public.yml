@@ -1,0 +1,71 @@
+Transform: 'AWS::Serverless-2016-10-31'
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Creates a static website in AWS, served with S3
+
+Parameters:
+
+  DomainNameParameter:
+    Description: Domain name the site will be available under
+    Type: String
+
+  HostedZoneIdParameter:
+    Description: The ID of the hosted zone
+    Type: AWS::Route53::HostedZone::Id
+
+  IndexDocumentParameter:
+    Description: The default file for directories
+    Type: String
+    Default: index.html
+
+  ErrorDocumentParameter:
+    Description: The document served for errors
+    Type: String
+    Default: error.html
+
+Resources:
+
+  # Serves blog content
+  WebBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    Properties:
+      AccessControl: PublicRead
+      BucketName: !Sub 'web-${DomainNameParameter}-${AWS::AccountId}-${AWS::Region}'
+      WebsiteConfiguration:
+        ErrorDocument: !Ref ErrorDocumentParameter
+        IndexDocument: !Ref IndexDocumentParameter
+
+  # Allow Public to read bucket
+  WebBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref WebBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: PublicReadGetObject
+            Effect: Allow
+            Action: s3:GetObject
+            Principal: '*'
+            Resource: !Sub '${WebBucket.Arn}/*'
+
+  # CNAME to S3 Website Endpoint
+  DnsRootCnameRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZoneIdParameter
+      Name: !Ref DomainNameParameter
+      Type: CNAME
+      TTL: 300
+      ResourceRecords:
+        - !GetAtt WebBucket.WebsiteURL
+
+Outputs:
+
+  WebsiteBucketName:
+    Description: 'The name of the bucket for publishing the website'
+    Value: !Ref WebBucket
+
+  WebsiteS3Link:
+    Description: 'The direct link to the S3 bucket'
+    Value: !GetAtt WebBucket.WebsiteURL

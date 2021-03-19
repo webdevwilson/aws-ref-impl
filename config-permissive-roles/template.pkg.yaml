@@ -1,0 +1,124 @@
+Transform: AWS::Serverless-2016-10-31
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Deploy config rule for overly permissive roles
+Resources:
+  CloudTrailBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName:
+        Fn::Sub: permissive-roles-${AWS::AccountId}-${AWS::Region}
+  CloudTrailBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket:
+        Ref: CloudTrailBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Sid: AWSCloudTrailAclCheck
+          Effect: Allow
+          Principal:
+            Service: cloudtrail.amazonaws.com
+          Action: s3:GetBucketAcl
+          Resource:
+            Fn::Sub: arn:aws:s3:::${CloudTrailBucket}
+        - Sid: AWSCloudTrailWrite
+          Effect: Allow
+          Principal:
+            Service: cloudtrail.amazonaws.com
+          Action: s3:PutObject
+          Resource:
+            Fn::Sub: arn:aws:s3:::${CloudTrailBucket}/cloudtrail/AWSLogs/${AWS::AccountId}/*
+          Condition:
+            StringEquals:
+              s3:x-amz-acl: bucket-owner-full-control
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      RetentionInDays: 120
+  LogGroupRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Sid: AssumeRole1
+          Effect: Allow
+          Principal:
+            Service: cloudtrail.amazonaws.com
+          Action: sts:AssumeRole
+      Policies:
+      - PolicyName: cloudtrail-policy
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - logs:CreateLogStream
+            - logs:PutLogEvents
+            Resource:
+              Fn::GetAtt:
+              - LogGroup
+              - Arn
+  Topic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: config-permissive-roles
+  TopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Sid: AWSCloudTrailSNSPolicy
+          Effect: Allow
+          Principal:
+            Service: cloudtrail.amazonaws.com
+          Resource:
+            Ref: Topic
+          Action: sns:Publish
+      Topics:
+      - Ref: Topic
+  TopicFunction:
+    Type: AWS::Serverless::Function
+    DependsOn:
+    - TopicPolicy
+    Properties:
+      Handler: cloudtrail_lambda_handler.handler
+      Runtime: python3.7
+      CodeUri: s3://cf-templates-xo75q5vksa28-us-east-1/2af8da7addb2695e0e79ac51d6930e21
+      Description: Processes CloudTrail events from topic
+      MemorySize: 1024
+      Timeout: 15
+      Policies:
+      - AWSLambdaExecute
+      Events:
+        CloudTrailLog:
+          Type: SNS
+          Properties:
+            Topic:
+              Ref: Topic
+  CloudTrail:
+    Type: AWS::CloudTrail::Trail
+    DependsOn:
+    - CloudTrailBucketPolicy
+    Properties:
+      CloudWatchLogsLogGroupArn:
+        Fn::GetAtt:
+        - LogGroup
+        - Arn
+      CloudWatchLogsRoleArn:
+        Fn::GetAtt:
+        - LogGroupRole
+        - Arn
+      IncludeGlobalServiceEvents: true
+      IsLogging: true
+      IsMultiRegionTrail: true
+      S3BucketName:
+        Ref: CloudTrailBucket
+      S3KeyPrefix: cloudtrail/
+      SnsTopicName:
+        Fn::GetAtt:
+        - Topic
+        - TopicName
+      TrailName: PermissiveRolesCloudTrail

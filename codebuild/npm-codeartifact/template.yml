@@ -1,0 +1,87 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: |
+  Creates a codebuild project that publishes to an NPM Repository in CodeArtifact
+Parameters:
+
+  Name:
+    Type: String
+    Default: example-npm-codeartifact
+
+  GithubSourceRepository:
+    Type: String
+    Default: https://github.com/webdevwilson/example-npm-codeartifact
+
+  NpmRepository:
+    Type: String
+    Default: None
+
+Resources:
+
+  BuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${Name}-build-role'
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: 'sts:AssumeRole'
+            Effect: Allow
+            Principal:
+              Service:
+                - 'codebuild.amazonaws.com'
+      Path: /
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+            - Effect: Allow
+              Action:
+                - 'codeartifact:DescribePackageVersion'
+                - 'codeartifact:DescribeRepository'
+                - 'codeartifact:GetPackageVersionReadme'
+                - 'codeartifact:GetRepositoryEndpoint'
+                - 'codeartifact:ListPackageVersionAssets'
+                - 'codeartifact:ListPackageVersionDependencies'
+                - 'codeartifact:ListPackageVersions'
+                - 'codeartifact:ListPackages'
+                - 'codeartifact:PublishPackageVersion'
+                - 'codeartifact:PutPackageMetadata'
+                - 'codeartifact:ReadFromRepository'
+              Resource: ['*']
+
+  BuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Artifacts:
+        Type: NO_ARTIFACTS
+      Name: !Sub '${Name}-build'
+      ServiceRole: !GetAtt BuildRole.Arn
+      Source:
+        Type: GITHUB
+        Location: !Ref GithubSourceRepository
+        BuildSpec: |
+          version: 0.2
+          phases:
+            build:
+              commands:
+                 - npm publish
+        GitCloneDepth: 1
+        GitSubmodulesConfig:
+          FetchSubmodules: False
+        InsecureSsl: False
+        ReportBuildStatus: False
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/amazonlinux2-x86_64-standard:3.0
+      Triggers:
+        Webhook: True
+        FilterGroups:
+          -
+            - Type: EVENT
+              Pattern: PUSH
+            - Type: BASE_REF
+              Pattern: ^refs/tags/
+      LogsConfig:
+        CloudWatchLogs:
+          Status: ENABLED

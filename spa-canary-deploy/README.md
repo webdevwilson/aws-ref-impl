@@ -1,17 +1,12 @@
-# cloudfront-s3-bucket
+# spa-canary-deploy
 
-Creates a CloudFront distribution in front of a private S3 bucket using an origin access identity to access the bucket. Uses certificate created in ACM. Useful for hosting static websites in S3.
+Creates a SPA application
 
 ## Certificate
 
 DNS validation will need to be completed while the stack update is in process. Copy the value available from CloudFormation console during the update and add to your DNS records.
 
 ## Usage
-
-* simple-public - Cheapest setup, host site with S3 bucket and nothing else
-* cloudfront-public - Adds Cloudfront distribution for hosting the site for less latency
-* cloudfront-auth - Adds BASIC Authentication for protected content 
-* full - Configure CloudFront, ACM, Route53
 
 ### Package
 

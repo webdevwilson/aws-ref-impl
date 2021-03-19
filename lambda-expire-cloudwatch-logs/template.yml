@@ -1,0 +1,41 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: 'Creates lambda that manages cloudwatch log retention'
+Resources:
+
+  LambdaFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: log-retention-policy
+      Handler: set_cw_log_expiration.handler
+      Description: Enforces log retention policy
+      CodeUri: .
+      Runtime: python3.8
+      MemorySize: 512
+      Policies:
+        - Statement:
+          - Effect: 'Allow'
+            Action:
+              - logs:DescribeLogGroups
+              - logs:PutRetentionPolicy
+            Resource: '*'
+      Events:
+        Cron:
+          Type: Schedule
+          Properties:
+            Schedule: rate(24 hours)
+            Name: my-schedule
+            Description: Default rule
+            Enabled: True
+            Input: !Sub |
+              {
+                "Policies": [{
+                  "logGroupNamePrefix": "/aws/codebuild",
+                  "logRetentionInDays": 14
+                }, {
+                  "logGroupNamePrefix": "/aws/lambda",
+                  "logRetentionInDays": 30
+                }, {
+                  "logRetentionInDays": 90
+                }]
+              }

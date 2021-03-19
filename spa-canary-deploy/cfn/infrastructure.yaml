@@ -1,0 +1,241 @@
+Transform: 'AWS::Serverless-2016-10-31'
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Deploys the blog to AWS
+
+Parameters:
+
+  AcmCertificateArn:
+    Description: The ARN of the ACM certificate
+    Type: String
+
+  SiteId:
+    Description: ID of the website, must be unique in an account
+    Type: String
+
+  DomainName:
+    Description: The domain name of the site
+    Type: String
+
+Resources:
+
+  # Serves static content
+  BlueWebBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    Properties:
+      AccessControl: Private
+      BucketName: !Sub 'web-blue-${SiteId}-${AWS::AccountId}-${AWS::Region}'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: 'True'
+        BlockPublicPolicy: 'True'
+        IgnorePublicAcls: 'True'
+        RestrictPublicBuckets: 'True'
+
+  # Allow public to read the bucket
+  BlueWebBucketPolicy: 
+    Type: AWS::S3::BucketPolicy
+    Properties: 
+      Bucket: !Ref BlueWebBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action: s3:GetObject
+            Principal:
+              CanonicalUser: !GetAtt CloudFrontOriginAccessIdentity.S3CanonicalUserId
+            Resource: !Sub '${BlueWebBucket.Arn}/*'
+
+  # Serves static content
+  GreenWebBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    Properties:
+      AccessControl: Private
+      BucketName: !Sub 'web-green-${SiteId}-${AWS::AccountId}-${AWS::Region}'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: 'True'
+        BlockPublicPolicy: 'True'
+        IgnorePublicAcls: 'True'
+        RestrictPublicBuckets: 'True'
+
+  # Allow public to read the bucket
+  GreenWebBucketPolicy: 
+    Type: AWS::S3::BucketPolicy
+    Properties: 
+      Bucket: !Ref GreenWebBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action: s3:GetObject
+            Principal:
+              CanonicalUser: !GetAtt CloudFrontOriginAccessIdentity.S3CanonicalUserId
+            Resource: !Sub '${GreenWebBucket.Arn}/*'
+
+  # Logging bucket for CloudFront access logs
+  LoggingBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    Properties:
+      AccessControl: Private
+      BucketName: !Sub 'logging-${SiteId}-${AWS::AccountId}-${AWS::Region}'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: 'True'
+        BlockPublicPolicy: 'True'
+        IgnorePublicAcls: 'True'
+        RestrictPublicBuckets: 'True'
+
+  # Create a role for the lambda to run as
+  IndexPageRewriteFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement: 
+          - Effect: 'Allow'
+            Principal: 
+              Service: 
+                - edgelambda.amazonaws.com
+                - lambda.amazonaws.com
+            Action: 
+              - 'sts:AssumeRole'
+      ManagedPolicyArns: 
+        - arn:aws:iam::aws:policy/AdministratorAccess
+
+  # Create a lambda function to rewrite requests for directories
+  IndexPageRewriteFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Runtime: python3.7
+      Handler: directory_rewrite.handler
+      CodeUri: ../lambda
+      Role: !GetAtt IndexPageRewriteFunctionRole.Arn
+      AutoPublishAlias: latest
+
+  # Create an origin access identity for accessing the web bucket
+  CloudFrontOriginAccessIdentity:
+    Type: AWS::CloudFront::CloudFrontOriginAccessIdentity
+    Properties: 
+      CloudFrontOriginAccessIdentityConfig:
+        Comment: 'Allow CloudFront to access S3 bucket'
+  
+  # Blue CloudFront distribution serves content from blue S3 bucket
+  BlueCloudFrontDistribution:
+    Type: AWS::CloudFront::Distribution
+    DependsOn: 
+      - BlueWebBucketPolicy
+      - LoggingBucket
+    Properties:
+      DistributionConfig:
+        Origins:
+          - DomainName: !Sub '${BlueWebBucket}.s3.amazonaws.com'
+            Id: S3Origin
+            S3OriginConfig:
+              OriginAccessIdentity: !Sub 'origin-access-identity/cloudfront/${CloudFrontOriginAccessIdentity}'
+        Enabled: 'true'
+        DefaultRootObject: index.html
+        HttpVersion: http2
+        Logging:
+          IncludeCookies: 'false'
+          Bucket: !Sub '${LoggingBucket}.s3.amazonaws.com'
+          Prefix: cloudfront
+        Aliases:
+          - !Ref DomainName
+        DefaultCacheBehavior:
+          AllowedMethods:
+            - GET
+            - HEAD
+            - OPTIONS
+          Compress: 'True'
+          DefaultTTL: 31536000
+          LambdaFunctionAssociations:
+            - EventType: origin-request
+              LambdaFunctionARN: !Ref IndexPageRewriteFunction.Version
+          TargetOriginId: S3Origin
+          ForwardedValues:
+            QueryString: 'false'
+            Cookies:
+              Forward: none
+          ViewerProtocolPolicy: redirect-to-https
+        PriceClass: PriceClass_All
+
+  # Green CloudFront distribution serves content from green S3 bucket
+  GreenCloudFrontDistribution:
+    Type: AWS::CloudFront::Distribution
+    DependsOn: 
+      - GreenWebBucketPolicy
+      - LoggingBucket
+    Properties:
+      DistributionConfig:
+        Origins:
+          - DomainName: !Sub '${GreenWebBucket}.s3.amazonaws.com'
+            Id: S3Origin
+            S3OriginConfig:
+              OriginAccessIdentity: !Sub 'origin-access-identity/cloudfront/${CloudFrontOriginAccessIdentity}'
+        Enabled: 'true'
+        DefaultRootObject: index.html
+        HttpVersion: http2
+        Logging:
+          IncludeCookies: 'false'
+          Bucket: !Sub '${LoggingBucket}.s3.amazonaws.com'
+          Prefix: cloudfront
+        Aliases:
+          - !Ref DomainName
+        DefaultCacheBehavior:
+          AllowedMethods:
+            - GET
+            - HEAD
+            - OPTIONS
+          Compress: 'True'
+          DefaultTTL: 31536000
+          LambdaFunctionAssociations:
+            - EventType: origin-request
+              LambdaFunctionARN: !Ref IndexPageRewriteFunction.Version
+          TargetOriginId: S3Origin
+          ForwardedValues:
+            QueryString: 'false'
+            Cookies:
+              Forward: none
+          ViewerProtocolPolicy: redirect-to-https
+        PriceClass: PriceClass_All
+        ViewerCertificate:
+          AcmCertificateArn: !Ref AcmCertificateArn
+          SslSupportMethod: sni-only
+
+  # Create a Public Route53 Hosted Zone
+  DnsHostedZone:
+    Type: AWS::Route53::HostedZone
+    Properties:
+      Name: !Ref DomainName
+    
+  # Root A Record points to CloudFront distribution
+  # DnsRootARecord:
+  #   Type: AWS::Route53::RecordSet
+  #   Properties:
+  #     HostedZoneId: !Ref DnsHostedZone
+  #     Name: !Ref DomainName
+  #     Type: A
+  #     Failover: SECONDARY
+  #     SetIdentifier: CLOUDFRONT
+  #     AliasTarget:
+  #       DNSName: !GetAtt CloudFrontDistribution.DomainName
+  #       HostedZoneId: Z2FDTNDATAQYW2
+  #       EvaluateTargetHealth: 'True'
+
+Outputs:
+
+  # BlueDistributionId:
+  #   Description: 'The ID of the CloudFront distribution'
+  #   Value: !Ref BlueCloudFrontDistribution
+
+  BlueWebsiteBucketName:
+    Description: 'The name of the bucket for publishing the website'
+    Value: !Ref BlueWebBucket
+
+  GreenWebsiteBucketName:
+    Description: 'The name of the bucket for publishing the website'
+    Value: !Ref GreenWebBucket
+
+  # BlueWebsiteLink:
+  #   Description: 'Link to the Cloudfront Distribution'
+  #   Value: !Sub 'https://${BlueCloudFrontDistribution.DomainName}'

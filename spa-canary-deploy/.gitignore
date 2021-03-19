@@ -1,0 +1,4 @@
+dist
+
+# I put parameters in here and source them before running make
+secrets.env

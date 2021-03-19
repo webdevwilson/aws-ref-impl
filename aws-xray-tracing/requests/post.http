@@ -1,0 +1,6 @@
+POST {{host}}/Prod/
+Content-Type: application/json
+
+{"foo": "bar"}
+
+###

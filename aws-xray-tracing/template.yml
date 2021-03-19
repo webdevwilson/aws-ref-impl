@@ -1,0 +1,92 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: 'Creates lambda that manages cloudwatch log retention'
+Globals:
+
+  Function:
+    CodeUri: ./lambdas
+    Runtime: python3.7
+    MemorySize: 512
+    Tracing: Active
+
+Resources:
+
+  Queue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: aws-xray-tracing-endpoint
+
+  Topic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: aws-xray-tracing-topic
+      TopicName: aws-xray-tracing-topic
+
+  Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'aws-xray-tracing-bucket-${AWS::AccountId}'
+
+  EndpointFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: aws-xray-tracing-endpoint
+      Handler: endpoint.handler
+      Environment:
+        Variables:
+          QUEUE_URL: !Ref Queue
+      Policies:
+        - Statement:
+          - Effect: Allow
+            Action:
+              - 'sqs:SendMessage'
+            Resource: !GetAtt 'Queue.Arn'
+      Events:
+        Endpoint:
+          Type: Api
+          Properties:
+            Path: /
+            Method: POST
+
+  QueueWorkerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: aws-xray-tracing-queue-worker
+      Handler: queue_worker.handler
+      Environment:
+        Variables:
+          TOPIC_ARN: !Ref Topic
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - 'sns:Publish'
+              Resource: !Ref 'Topic'
+      Events:
+        Queue:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt 'Queue.Arn'
+
+  SubscriberFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: aws-xray-tracing-subscriber
+      Handler: subscriber.handler
+      Environment:
+        Variables:
+          S3_BUCKET: !Ref Bucket
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - 's3:Get*'
+                - 's3:Put*'
+              Resource:
+                - !GetAtt 'Bucket.Arn'
+                - !Sub '${Bucket.Arn}/*'
+      Events:
+        Subscribe:
+          Type: SNS
+          Properties:
+            Topic: !Sub 'arn:aws:sns:${AWS::Region}:${AWS::AccountId}:aws-xray-tracing-topic'

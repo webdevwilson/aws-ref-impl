@@ -1,0 +1,73 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Creates resources for integration testing of permissions
+Resources:
+
+  Group:
+    Type: AWS::IAM::Group
+    Properties: 
+      GroupName: test-config-permissive
+      ManagedPolicyArns: 
+        - arn:aws:iam::aws:policy/AmazonAPIGatewayInvokeFullAccess
+      Policies: 
+        - PolicyName: "root"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action: "ec2:DescribeInstances"
+                Resource: "*"
+
+  User:
+    Type: AWS::IAM::User
+    Properties: 
+      Groups: 
+        - !Ref Group
+      ManagedPolicyArns: 
+        - arn:aws:iam::aws:policy/AmazonAppStreamReadOnlyAccess
+      Policies: 
+        - PolicyName: 'secondary'
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action: "secretsmanager:*Secret"
+                Resource: "*"
+              - Effect: "Allow"
+                Action: "s3:PutObject"
+                Resource: "*"
+      UserName: test-config-permissive
+
+  Role:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              AWS: !Sub "arn:aws:iam::${AWS::AccountId}:root" 
+            Action:
+              - "sts:AssumeRole"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonAPIGatewayInvokeFullAccess
+        - arn:aws:iam::aws:policy/AmazonAppStreamReadOnlyAccess
+      Policies:
+        - PolicyName: "root"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action: "ec2:DescribeInstances"
+                Resource: "*"
+        - PolicyName: 'secondary'
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action: "secretsmanager:*Secret"
+                Resource: "*"
+              - Effect: "Allow"
+                Action: "s3:PutObject"
+                Resource: "*"
+      RoleName: test-config-permissive
+      Description: Temporary Integration Test Role
